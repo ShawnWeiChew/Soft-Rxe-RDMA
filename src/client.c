@@ -88,7 +88,7 @@ start_client:
             printf("Could not find anything in the completion queue...\n");
             continue;
         } else {
-            printf("Got a completion queue event!\n");
+            // printf("Got a completion queue event!\n");
             void *context;
             ibv_get_cq_event(ib_res.comp_channel, &ib_res.cq, &context);
             ibv_ack_cq_events(ib_res.cq, 1);
@@ -109,7 +109,7 @@ start_client:
                 char *msg_ptr = (char *)wc[i].wr_id;
 
                 if (wc[i].opcode == IBV_WC_RECV) {
-                    printf("received a message from the other side\n");
+                    // printf("received a message from the other side\n");
                     message_recv_count++;
                     post_send(msg_size, ib_res.mr->lkey, (uintptr_t)msg_ptr, MSG_REGULAR, ib_res.qp,
                               msg_ptr);

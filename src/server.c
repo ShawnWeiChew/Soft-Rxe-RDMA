@@ -6,7 +6,6 @@
 #include <assert.h>
 #include <bits/pthreadtypes.h>
 #include <infiniband/verbs.h>
-#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdio.h>
@@ -47,53 +46,42 @@ void *server_thread(void *args) {
 
     int message_recv_count = 0;
     while (true) {
-        ret = ibv_req_notify_cq(ib_res.cq, 0);
-        assert(ret == 0 && "Could not arm the CQ");
-
-        struct pollfd to_poll[] = {{.fd = ib_res.comp_channel->fd, .events = POLLIN}};
-
-        int n = poll(to_poll, 1, 3000);
-
+        int n = ibv_poll_cq(ib_res.cq, num_wc, wc);
         if (n < 0) {
             assert(0 && "failed to poll completion queue");
-        } else if (n == 0) {
-            printf("Could not find anything in the completion queue...\n");
-            continue;
-        } else {
-            printf("Got a completion queue event!\n");
-            void *context;
-            ibv_get_cq_event(ib_res.comp_channel, &ib_res.cq, &context);
-            ibv_ack_cq_events(ib_res.cq, 1);
         }
 
-        do {
-            n = ibv_poll_cq(ib_res.cq, 1, wc);
+        for (int i = 0; i < n; i++) {
+            if (wc[i].status != IBV_WC_SUCCESS) {
+                printf("Failure reason: %s\n", ibv_wc_status_str(wc[i].status));
 
-            for (int i = 0; i < n; i++) {
-                if (wc[i].status != IBV_WC_SUCCESS) {
-                    if (wc[i].opcode == IBV_WC_SEND) {
-                        assert(0 && "Failed send");
-                    } else if (wc[i].opcode == IBV_WC_RECV) {
-                        assert(0 && "Recv failed");
-                    }
-                }
-
-                char *msg_ptr = (char *)wc[i].wr_id;
-
-                if (wc[i].opcode == IBV_WC_RECV) {
-                    printf("received a message from the other side\n");
-                    message_recv_count++;
-                    post_send(msg_size, ib_res.mr->lkey, (uintptr_t)msg_ptr, MSG_REGULAR, ib_res.qp,
-                              msg_ptr);
-                    post_recv(msg_size, ib_res.mr->lkey, (uintptr_t)msg_ptr, ib_res.qp, msg_ptr);
-                }
-
-                if (message_recv_count == 100) {
-                    printf("RDMA success! 100 messages exchanged\n");
-                    pthread_exit((void *)0);
+                if (wc[i].opcode == IBV_WC_SEND) {
+                    assert(0 && "Failed send");
+                } else if (wc[i].opcode == IBV_WC_RECV) {
+                    assert(0 && "Recv failed");
                 }
             }
-        } while (n > 0);
+
+            if (wc[i].opcode == IBV_WC_RECV) {
+                // printf("received a message from the other side\n");
+                message_recv_count++;
+                char *msg_ptr = (char *)wc[i].wr_id;
+                post_send(msg_size, ib_res.mr->lkey, (uintptr_t)msg_ptr, MSG_REGULAR, ib_res.qp,
+                          msg_ptr);
+
+                post_recv(msg_size, ib_res.mr->lkey, (uintptr_t)msg_ptr, ib_res.qp, msg_ptr);
+            }
+
+            if (message_recv_count == 100) {
+                printf("RDMA success! 100 messages exchanged\n");
+                pthread_exit((void *)0);
+            }
+        }
+
+        struct timespec ts = {
+            .tv_sec = 0, .tv_nsec = (300 + rand() % 110) * 1000000L, /* 30–60 ms in nanoseconds */
+        };
+        nanosleep(&ts, NULL);
     }
 }
 
