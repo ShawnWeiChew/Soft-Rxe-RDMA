@@ -196,8 +196,8 @@ int connect_qp_server() {
     sock_get_qp_info(peer_sockfd, &remote_qp_info);
 
     // move the QP into RTS state
-    // ret = modify_rts(ib_res.qp, remote_qp_info.qp_num, remote_qp_info.gid);
-    // assert(ret == 0 && "Failed to modify QP to RTS");
+    ret = modify_rts(ib_res.qp, remote_qp_info.qp_num, remote_qp_info.gid);
+    assert(ret == 0 && "Failed to modify QP to RTS");
 
     // put up a barrier to ensure that both sides have reached this stage
     ret = io_read(peer_sockfd, (uint8_t *)sock_buf, sizeof(SOCK_SYNC_MSG));
@@ -265,8 +265,8 @@ int connect_qp_client() {
     sock_get_qp_info(sockfd, &remote_qp_info);
     sock_send_qp_info(sockfd, &local_qp_info);
 
-    // ret = modify_rts(ib_res.qp, remote_qp_info.qp_num, remote_qp_info.gid);
-    // assert(ret == 0 && "Failed to modify QP to RTS");
+    ret = modify_rts(ib_res.qp, remote_qp_info.qp_num, remote_qp_info.gid);
+    assert(ret == 0 && "Failed to modify QP to RTS");
 
     ret = io_write(sockfd, (uint8_t *)sock_buf, sizeof(SOCK_SYNC_MSG));
     assert(ret == sizeof(SOCK_SYNC_MSG) && "Could not write sync message");
@@ -280,4 +280,58 @@ int connect_qp_client() {
     return 0;
 }
 
-int modify_rts(struct ibv_qp *qp, uint32_t qp_num, union ibv_gid gid) { return 0; }
+int modify_rts(struct ibv_qp *qp, uint32_t qp_num, union ibv_gid gid) {
+    int ret = 0;
+    {
+        struct ibv_qp_attr qp_attr = {.qp_state = IBV_QPS_INIT,
+                                      .pkey_index = 0,
+                                      .port_num = 1,
+                                      .qp_access_flags =
+                                          IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
+                                          IBV_ACCESS_REMOTE_ATOMIC | IBV_ACCESS_REMOTE_WRITE};
+        ret = ibv_modify_qp(qp, &qp_attr,
+                            IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
+        assert(ret == 0 && "Could not bring QP to init");
+    }
+
+    {
+        struct ibv_qp_attr qp_attr = {.qp_state = IBV_QPS_RTR,
+                                      .path_mtu = IBV_MTU_1024,
+                                      .dest_qp_num = qp_num,
+                                      .rq_psn = 0,
+                                      .max_dest_rd_atomic = 1,
+                                      .min_rnr_timer = 12,
+                                      .ah_attr = {.is_global = 1,
+                                                  .sl = 0,
+                                                  .src_path_bits = 0,
+                                                  .port_num = 1,
+                                                  .grh = {
+                                                      .dgid = gid,
+                                                      .sgid_index = 2,
+                                                      .hop_limit = 0xFF,
+                                                  }}};
+
+        ret = ibv_modify_qp(qp, &qp_attr,
+                            IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
+                                IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER | IBV_QP_AV);
+        assert(ret == 0 && "Could not bring QP to RTR");
+    }
+
+    {
+        struct ibv_qp_attr qp_attr = {
+            .qp_state = IBV_QPS_RTS,
+            .timeout = 14,
+            .retry_cnt = 7,
+            .rnr_retry = 7,
+            .sq_psn = 0,
+            .max_rd_atomic = 1,
+        };
+
+        ret = ibv_modify_qp(ib_res.qp, &qp_attr,
+                            IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
+                                IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
+        assert(ret == 0 && "Could not bring QP to RTS");
+    }
+
+    return 0;
+}
