@@ -1,0 +1,8 @@
+# Use a standard style as a base (e.g., LLVM, Google, Chromium)
+BasedOnStyle: LLVM
+# Set indentation to 4 spaces
+IndentWidth: 4
+# Ensure spaces are used instead of tabs
+UseTab: Never
+# Optional: Set column limit (common is 80 or 100)
+ColumnLimit: 100
