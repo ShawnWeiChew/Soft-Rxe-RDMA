@@ -63,7 +63,7 @@ void *server_thread(void *args) {
             }
 
             if (wc[i].opcode == IBV_WC_RECV) {
-                printf("received a message from the other side\n");
+                // printf("received a message from the other side\n");
                 message_recv_count++;
                 char *msg_ptr = (char *)wc[i].wr_id;
                 post_send(msg_size, ib_res.mr->lkey, (uintptr_t)msg_ptr, MSG_REGULAR, ib_res.qp,
@@ -77,6 +77,11 @@ void *server_thread(void *args) {
                 pthread_exit((void *)0);
             }
         }
+
+        struct timespec ts = {
+            .tv_sec = 0, .tv_nsec = (300 + rand() % 110) * 1000000L, /* 30–60 ms in nanoseconds */
+        };
+        nanosleep(&ts, NULL);
     }
 }
 

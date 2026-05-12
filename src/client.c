@@ -91,7 +91,7 @@ start_client:
             char *msg_ptr = (char *)wc[i].wr_id;
 
             if (wc[i].opcode == IBV_WC_RECV) {
-                printf("received a message from the other side\n");
+                // printf("received a message from the other side\n");
                 message_recv_count++;
                 post_send(msg_size, ib_res.mr->lkey, (uintptr_t)msg_ptr, MSG_REGULAR, ib_res.qp,
                           msg_ptr);
