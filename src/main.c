@@ -1,5 +1,7 @@
+#include "../include/client.h"
 #include "../include/config.h"
 #include "../include/ib.h"
+#include "../include/server.h"
 #include <assert.h>
 #include <stdio.h>
 
@@ -18,8 +20,17 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    config_info.num_concurr_msgs = 20;
+    config_info.msg_size = 64;
+
     ret = setup_ib(config_info.is_server);
     assert(ret == 0 && "Could not set up IB connection");
+
+    if (config_info.is_server) {
+        run_server();
+    } else {
+        run_client();
+    }
 
     return 0;
 }
