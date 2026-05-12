@@ -15,6 +15,8 @@ typedef struct {
     struct ibv_cq *cq;
     struct ibv_qp *qp;
 
+    struct ibv_comp_channel *comp_channel;
+
     // TODO: not sure what the point of port attr and dev attr are...
     struct ibv_port_attr port_attr;
     struct ibv_device_attr dev_attr;

@@ -53,8 +53,12 @@ int setup_ib(bool is_server) {
     ret = ibv_query_device(ib_res.ibv_ctx, &ib_res.dev_attr);
     assert(ret == 0 && "Failed to query device");
 
+    ib_res.comp_channel = ibv_create_comp_channel(ib_res.ibv_ctx);
+    assert(ib_res.comp_channel != NULL && "Could not create comp channel");
+
     // TODO: test by creating completion channels after this
-    ib_res.cq = ibv_create_cq(ib_res.ibv_ctx, ib_res.dev_attr.max_cqe, NULL, NULL, 0);
+    ib_res.cq =
+        ibv_create_cq(ib_res.ibv_ctx, ib_res.dev_attr.max_cqe, NULL, ib_res.comp_channel, 0);
     assert(ib_res.cq != NULL && "Could not create completion queue");
 
     // create the QP

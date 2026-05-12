@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <bits/pthreadtypes.h>
 #include <infiniband/verbs.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdio.h>
@@ -46,11 +47,24 @@ void *server_thread(void *args) {
 
     int message_recv_count = 0;
     while (true) {
-        int n = ibv_poll_cq(ib_res.cq, num_wc, wc);
+        ret = ibv_req_notify_cq(ib_res.cq, 0);
+        assert(ret == 0 && "Could not arm the CQ");
+
+        struct pollfd to_poll[] = {{.fd = ib_res.comp_channel->fd, .events = POLLIN}};
+
+        int n = poll(to_poll, 1, 3000);
+
         if (n < 0) {
             assert(0 && "failed to poll completion queue");
+        } else if (n == 0) {
+            printf("Could not find anything in the completion queue...\n");
+            continue;
+        } else {
+            printf("Got a completion queue event!\n");
+            ibv_ack_cq_events(ib_res.cq, 1);
         }
 
+        n = ibv_poll_cq(ib_res.cq, 1, wc);
         for (int i = 0; i < n; i++) {
             if (wc[i].status != IBV_WC_SUCCESS) {
                 printf("Failure reason: %s\n", ibv_wc_status_str(wc[i].status));
