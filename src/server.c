@@ -61,36 +61,39 @@ void *server_thread(void *args) {
             continue;
         } else {
             printf("Got a completion queue event!\n");
+            void *context;
+            ibv_get_cq_event(ib_res.comp_channel, &ib_res.cq, &context);
             ibv_ack_cq_events(ib_res.cq, 1);
         }
 
-        n = ibv_poll_cq(ib_res.cq, 1, wc);
-        for (int i = 0; i < n; i++) {
-            if (wc[i].status != IBV_WC_SUCCESS) {
-                printf("Failure reason: %s\n", ibv_wc_status_str(wc[i].status));
+        do {
+            n = ibv_poll_cq(ib_res.cq, 1, wc);
 
-                if (wc[i].opcode == IBV_WC_SEND) {
-                    assert(0 && "Failed send");
-                } else if (wc[i].opcode == IBV_WC_RECV) {
-                    assert(0 && "Recv failed");
+            for (int i = 0; i < n; i++) {
+                if (wc[i].status != IBV_WC_SUCCESS) {
+                    if (wc[i].opcode == IBV_WC_SEND) {
+                        assert(0 && "Failed send");
+                    } else if (wc[i].opcode == IBV_WC_RECV) {
+                        assert(0 && "Recv failed");
+                    }
+                }
+
+                char *msg_ptr = (char *)wc[i].wr_id;
+
+                if (wc[i].opcode == IBV_WC_RECV) {
+                    printf("received a message from the other side\n");
+                    message_recv_count++;
+                    post_send(msg_size, ib_res.mr->lkey, (uintptr_t)msg_ptr, MSG_REGULAR, ib_res.qp,
+                              msg_ptr);
+                    post_recv(msg_size, ib_res.mr->lkey, (uintptr_t)msg_ptr, ib_res.qp, msg_ptr);
+                }
+
+                if (message_recv_count == 100) {
+                    printf("RDMA success! 100 messages exchanged\n");
+                    pthread_exit((void *)0);
                 }
             }
-
-            if (wc[i].opcode == IBV_WC_RECV) {
-                printf("received a message from the other side\n");
-                message_recv_count++;
-                char *msg_ptr = (char *)wc[i].wr_id;
-                post_send(msg_size, ib_res.mr->lkey, (uintptr_t)msg_ptr, MSG_REGULAR, ib_res.qp,
-                          msg_ptr);
-
-                post_recv(msg_size, ib_res.mr->lkey, (uintptr_t)msg_ptr, ib_res.qp, msg_ptr);
-            }
-
-            if (message_recv_count == 100) {
-                printf("RDMA success! 100 messages exchanged\n");
-                pthread_exit((void *)0);
-            }
-        }
+        } while (n > 0);
     }
 }
 
