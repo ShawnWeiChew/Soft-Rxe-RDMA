@@ -1,6 +1,7 @@
 #include "../include/ib.h"
 #include "../include/config.h"
 #include "../include/io.h"
+#include "../include/util.h"
 #include "infiniband/verbs.h"
 #include <arpa/inet.h>
 #include <assert.h>
@@ -15,7 +16,7 @@
 #include <unistd.h>
 
 #define MESSAGE_SIZE 64
-#define MAX_NUM_MESSAGES 128
+#define MAX_NUM_MESSAGES 20
 
 ib_context ib_res;
 
@@ -40,15 +41,22 @@ int setup_ib(bool is_server) {
     assert(ret == 0 && "Could not query device");
 
     // setup the buffer
+    // we add 1 after configuring the max number of messages becuase the last one is used
+    // for the send buffer
     ib_res.ib_buf_size = MESSAGE_SIZE * MAX_NUM_MESSAGES;
 
-    ret = posix_memalign((void **)&ib_res.ib_buf, 4096, ib_res.ib_buf_size);
+    ret = posix_memalign((void **)&ib_res.ib_buf, 4096, ib_res.ib_buf_size + MESSAGE_SIZE);
     assert(ib_res.ib_buf != NULL && "Failed to allocate ib buf");
 
     ib_res.mr =
-        ibv_reg_mr(ib_res.pd, (void *)ib_res.ib_buf, ib_res.ib_buf_size,
+        ibv_reg_mr(ib_res.pd, (void *)ib_res.ib_buf, ib_res.ib_buf_size + MESSAGE_SIZE,
                    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
     assert(ib_res.mr != NULL && "Could not register MR");
+
+    // clear the recv buffer
+    memset(ib_res.ib_buf, 0, MESSAGE_SIZE * MAX_NUM_MESSAGES);
+    // set the send buffer
+    memset(ib_res.ib_buf + (MESSAGE_SIZE * MAX_NUM_MESSAGES), 'A', MESSAGE_SIZE);
 
     ret = ibv_query_device(ib_res.ibv_ctx, &ib_res.dev_attr);
     assert(ret == 0 && "Failed to query device");
@@ -58,13 +66,15 @@ int setup_ib(bool is_server) {
     assert(ib_res.cq != NULL && "Could not create completion queue");
 
     // create the QP
-    struct ibv_qp_init_attr qp_init_attr = {.send_cq = ib_res.cq,
-                                            .recv_cq = ib_res.cq,
-                                            .cap = {.max_send_wr = ib_res.dev_attr.max_qp_wr,
-                                                    .max_recv_wr = ib_res.dev_attr.max_qp_wr,
-                                                    .max_send_sge = 1,
-                                                    .max_recv_sge = 1},
-                                            .qp_type = IBV_QPT_RC};
+    struct ibv_qp_init_attr qp_init_attr = {
+        .send_cq = ib_res.cq,
+        .recv_cq = ib_res.cq,
+        .cap = {.max_send_wr = ib_res.dev_attr.max_qp_wr,
+                .max_recv_wr = ib_res.dev_attr.max_qp_wr,
+                .max_send_sge = 1,
+                .max_recv_sge = 1},
+        .qp_type = IBV_QPT_RC,
+    };
 
     ib_res.qp = ibv_create_qp(ib_res.pd, &qp_init_attr);
     assert(ib_res.qp != NULL && "Failed to create a QP");
@@ -116,6 +126,9 @@ int sock_get_qp_info(int peer_sock_fd, QpInfo *qp_info) {
 
     qp_info->gid = tmp_info.gid;
     qp_info->qp_num = ntohl(tmp_info.qp_num);
+    qp_info->rkey = ntohl(tmp_info.rkey);
+    qp_info->raddr = ntohll(tmp_info.raddr);
+
     return 0;
 }
 
@@ -124,6 +137,8 @@ int sock_send_qp_info(int peer_sock_fd, QpInfo *qp_info) {
 
     memcpy(&tmp_info, qp_info, sizeof(QpInfo));
     tmp_info.qp_num = htonl(qp_info->qp_num);
+    tmp_info.rkey = htonl(qp_info->rkey);
+    tmp_info.raddr = htonll(qp_info->raddr);
 
     ssize_t ret = io_write(peer_sock_fd, (uint8_t *)&tmp_info, sizeof(QpInfo));
     assert(ret > 0 && "Could not write QP informaion");
@@ -190,10 +205,15 @@ int connect_qp_server() {
     ret = ibv_query_gid(ib_res.ibv_ctx, 1, 2, &local_qp_info.gid);
     assert(ret == 0 && "Could not query device GID");
     local_qp_info.qp_num = ib_res.qp->qp_num;
+    local_qp_info.rkey = ib_res.mr->rkey;
+    local_qp_info.raddr = (uintptr_t)ib_res.ib_buf;
 
     // server will send its qp information first, then receive
     sock_send_qp_info(peer_sockfd, &local_qp_info);
     sock_get_qp_info(peer_sockfd, &remote_qp_info);
+
+    ib_res.rkey = remote_qp_info.rkey;
+    ib_res.raddr_base = remote_qp_info.raddr;
 
     // move the QP into RTS state
     ret = modify_rts(ib_res.qp, remote_qp_info.qp_num, remote_qp_info.gid);
@@ -208,6 +228,8 @@ int connect_qp_server() {
 
     printf("Connection between both peers has been set up: local qp: %d <-> remote qp: %d\n",
            local_qp_info.qp_num, remote_qp_info.qp_num);
+    printf("Buf addr: %p <-> Remote addr: %p\n", ib_res.ib_buf, (char *)ib_res.raddr_base);
+    printf("Local rkey: %u <-> Rmote rkey: %u\n", local_qp_info.rkey, ib_res.rkey);
     close(peer_sockfd);
     close(sockfd);
 
@@ -260,10 +282,15 @@ int connect_qp_client() {
 
     ret = ibv_query_gid(ib_res.ibv_ctx, 1, 2, &local_qp_info.gid);
     local_qp_info.qp_num = ib_res.qp->qp_num;
+    local_qp_info.rkey = ib_res.mr->rkey;
+    local_qp_info.raddr = (uintptr_t)ib_res.ib_buf;
 
     // exchange qp info
     sock_get_qp_info(sockfd, &remote_qp_info);
     sock_send_qp_info(sockfd, &local_qp_info);
+
+    ib_res.rkey = remote_qp_info.rkey;
+    ib_res.raddr_base = remote_qp_info.raddr;
 
     ret = modify_rts(ib_res.qp, remote_qp_info.qp_num, remote_qp_info.gid);
     assert(ret == 0 && "Failed to modify QP to RTS");
@@ -276,6 +303,8 @@ int connect_qp_client() {
 
     printf("Connection between both peers has been set up: local qp: %d <-> remote qp: %d\n",
            local_qp_info.qp_num, remote_qp_info.qp_num);
+    printf("Buf addr: %p <--> Remote addr: %p\n", ib_res.ib_buf, (char *)ib_res.raddr_base);
+    printf("Local rkey: %u <-> Rmote rkey: %u\n", local_qp_info.rkey, ib_res.rkey);
     close(sockfd);
     return 0;
 }
@@ -283,12 +312,13 @@ int connect_qp_client() {
 int modify_rts(struct ibv_qp *qp, uint32_t qp_num, union ibv_gid gid) {
     int ret = 0;
     {
-        struct ibv_qp_attr qp_attr = {.qp_state = IBV_QPS_INIT,
-                                      .pkey_index = 0,
-                                      .port_num = 1,
-                                      .qp_access_flags =
-                                          IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
-                                          IBV_ACCESS_REMOTE_ATOMIC | IBV_ACCESS_REMOTE_WRITE};
+        struct ibv_qp_attr qp_attr = {
+            .qp_state = IBV_QPS_INIT,
+            .pkey_index = 0,
+            .port_num = 1,
+            .qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
+                               IBV_ACCESS_REMOTE_ATOMIC | IBV_ACCESS_REMOTE_WRITE,
+        };
         ret = ibv_modify_qp(qp, &qp_attr,
                             IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
         assert(ret == 0 && "Could not bring QP to init");
@@ -360,5 +390,30 @@ int post_recv(uint32_t req_size, uint32_t lkey, uint64_t wr_id, struct ibv_qp *q
     struct ibv_recv_wr recv_wr = {.wr_id = wr_id, .sg_list = &list, .num_sge = 1};
 
     ret = ibv_post_recv(qp, &recv_wr, &bad_send_wr);
+    return ret;
+}
+
+int post_write(uint32_t req_size, uint32_t lkey, uint64_t wr_id, struct ibv_qp *qp, char *buf,
+               uint64_t raddr, uint32_t rkey, bool is_signalled) {
+    int ret = 0;
+    struct ibv_send_wr *bad_wr;
+
+    struct ibv_sge list = {
+        .addr = (uintptr_t)buf,
+        .length = req_size,
+        .lkey = lkey,
+    };
+
+    struct ibv_send_wr send_wr = {
+        .wr_id = wr_id,
+        .sg_list = &list,
+        .num_sge = 1,
+        .opcode = IBV_WR_RDMA_WRITE,
+        .send_flags = is_signalled ? IBV_SEND_SIGNALED : 0,
+        .wr.rdma.remote_addr = raddr,
+        .wr.rdma.rkey = rkey,
+    };
+
+    ret = ibv_post_send(qp, &send_wr, &bad_wr);
     return ret;
 }

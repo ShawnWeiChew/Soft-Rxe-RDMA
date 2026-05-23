@@ -24,6 +24,11 @@ void *server_thread(void *args) {
     int buf_offset = 0;
     char *buf_ptr = ib_res.ib_buf;
 
+    char *start_addr = ib_res.ib_buf;
+    char *start_addr_base = ib_res.ib_buf;
+    char *end_addr = start_addr + msg_size - 1;
+    char *raddr = (char *)ib_res.raddr_base;
+
     CPU_ZERO(&cpu_set);
     CPU_SET((long)args, &cpu_set);
     pthread_t self = pthread_self();
@@ -34,18 +39,46 @@ void *server_thread(void *args) {
     struct ibv_wc *wc = (struct ibv_wc *)calloc(num_wc, sizeof(struct ibv_wc));
     assert(wc != NULL && "Could not allocate receive work completion array");
 
-    for (int i = 0; i < num_concurrent_messages; i++) {
-        ret = post_recv(msg_size, ib_res.mr->lkey, (uint64_t)buf_ptr, ib_res.qp, buf_ptr);
-        assert(ret == 0 && "Thread failed to post recv");
-        buf_offset = (buf_offset + msg_size) % ib_res.ib_buf_size;
-        buf_ptr = ib_res.ib_buf + buf_offset;
+    struct ibv_qp_attr attr;
+    struct ibv_qp_init_attr init_attr;
+    ibv_query_qp(ib_res.qp, &attr, IBV_QP_STATE, &init_attr);
+    printf("QP state: %d\n", attr.qp_state);
+
+    // prepost the first send to kickstart things
+    ret =
+        post_write(msg_size, ib_res.mr->lkey, (uintptr_t)start_addr, ib_res.qp,
+                   start_addr + ib_res.ib_buf_size, // write buffer is at the end of the recvbuffer
+                   (uintptr_t)raddr, ib_res.rkey, true);
+    assert(ret == 0 && "Could not post the first write");
+    sleep(1);
+    struct ibv_wc wc2;
+    int n = ibv_poll_cq(ib_res.cq, 1, &wc2);
+    if (n == 1 && wc2.status != IBV_WC_SUCCESS) {
+        printf("Server write failed: %s\n", ibv_wc_status_str(wc2.status));
     }
 
-    ret = post_send(msg_size, ib_res.mr->lkey, 0, MSG_CTL_START, ib_res.qp, buf_ptr);
-    assert(ret == 0 && "Failed to signal the client to start");
+    puts("Starting server");
+    printf("Polling on %p, to %p, sz: %lu\n", start_addr, end_addr,
+           (uintptr_t)end_addr - (uintptr_t)start_addr);
 
     int message_recv_count = 0;
     while (true) {
+        while ((*(volatile char *)start_addr != 'A') || (*(volatile char *)end_addr != 'A')) {
+            // printf("%c %c\n", *start_addr, *end_addr);
+        }
+
+        ++message_recv_count;
+        memset(start_addr, 0, msg_size);
+        
+                    buf_offset = (buf_offset + msg_size) % ib_res.ib_buf_size;
+                    raddr = (char *)ib_res.raddr_base + buf_offset;
+                    start_addr = start_addr_base + buf_offset;
+                    end_addr = start_addr + msg_size - 1;
+
+        post_write(msg_size, ib_res.mr->lkey, (uintptr_t)start_addr, ib_res.qp,
+                   ib_res.ib_buf + ib_res.ib_buf_size, (uintptr_t)raddr, ib_res.rkey, true);
+    
+
         int n = ibv_poll_cq(ib_res.cq, num_wc, wc);
         if (n < 0) {
             assert(0 && "failed to poll completion queue");
@@ -61,21 +94,11 @@ void *server_thread(void *args) {
                     assert(0 && "Recv failed");
                 }
             }
+        }
 
-            if (wc[i].opcode == IBV_WC_RECV) {
-                printf("received a message from the other side\n");
-                message_recv_count++;
-                char *msg_ptr = (char *)wc[i].wr_id;
-                post_send(msg_size, ib_res.mr->lkey, (uintptr_t)msg_ptr, MSG_REGULAR, ib_res.qp,
-                          msg_ptr);
-
-                post_recv(msg_size, ib_res.mr->lkey, (uintptr_t)msg_ptr, ib_res.qp, msg_ptr);
-            }
-
-            if (message_recv_count == 100) {
-                printf("RDMA success! 100 messages exchanged\n");
-                pthread_exit((void *)0);
-            }
+        if (message_recv_count == 100) {
+            printf("RDMA success! 100 messages exchanged\n");
+            pthread_exit((void *)0);
         }
     }
 }

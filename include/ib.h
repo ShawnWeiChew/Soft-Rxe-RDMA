@@ -4,6 +4,8 @@
 #include <infiniband/verbs.h>
 #include <stdbool.h>
 
+#define SIG_INTERVAL 20
+
 // things that have to be done to set up a basic connection
 // 1. create your own ib structs
 
@@ -21,6 +23,10 @@ typedef struct {
 
     char *ib_buf;
     size_t ib_buf_size;
+
+    // store the remote host key
+    uint32_t rkey;
+    uint64_t raddr_base;
 } ib_context;
 
 extern ib_context ib_res;
@@ -29,6 +35,9 @@ extern ib_context ib_res;
 typedef struct {
     union ibv_gid gid;
     uint32_t qp_num;
+
+    uint32_t rkey;
+    uint64_t raddr;
 } QpInfo;
 
 enum MsgType {
@@ -46,6 +55,9 @@ int modify_rts(struct ibv_qp *qp, uint32_t qp_num, union ibv_gid gid);
 int post_send(uint32_t req_size, uint32_t lkey, uint64_t wr_id, uint32_t imm_data,
               struct ibv_qp *qp, char *buf);
 int post_recv(uint32_t req_size, uint32_t lkey, uint64_t wr_id, struct ibv_qp *qp, char *buf);
+
+int post_write(uint32_t req_size, uint32_t lkey, uint64_t wr_id, struct ibv_qp *qp, char *buf,
+               uint64_t raddr, uint32_t rkey, bool is_signalled);
 
 int connect_qp_server();
 int connect_qp_client();
