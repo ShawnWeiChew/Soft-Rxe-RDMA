@@ -69,10 +69,14 @@ int setup_ib(bool is_server) {
     struct ibv_qp_init_attr qp_init_attr = {
         .send_cq = ib_res.cq,
         .recv_cq = ib_res.cq,
-        .cap = {.max_send_wr = ib_res.dev_attr.max_qp_wr,
+        .cap =
+            {
+                .max_send_wr = ib_res.dev_attr.max_qp_wr,
                 .max_recv_wr = ib_res.dev_attr.max_qp_wr,
                 .max_send_sge = 1,
-                .max_recv_sge = 1},
+                .max_recv_sge = 1,
+                .max_inline_data = config_info.msg_size,
+            },
         .qp_type = IBV_QPT_RC,
     };
 
@@ -409,7 +413,7 @@ int post_write(uint32_t req_size, uint32_t lkey, uint64_t wr_id, struct ibv_qp *
         .sg_list = &list,
         .num_sge = 1,
         .opcode = IBV_WR_RDMA_WRITE,
-        .send_flags = is_signalled ? IBV_SEND_SIGNALED : 0,
+        .send_flags = is_signalled ? IBV_SEND_SIGNALED : 0 | IBV_SEND_INLINE,
         .wr.rdma.remote_addr = raddr,
         .wr.rdma.rkey = rkey,
     };
