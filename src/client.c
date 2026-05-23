@@ -21,10 +21,11 @@ void *client_function(void *args) {
     char *buf_ptr = ib_res.ib_buf;
 
     char *start_addr_base = buf_ptr;
-    char *end_addr_base = buf_ptr + msg_size - 1;
     char *start_addr = start_addr_base;
-    char *end_addr = end_addr_base;
-    char *raddr = (char *)ib_res.raddr_base;
+    char *end_addr = start_addr_base + (config_info.msg_size * config_info.batch_size) - 1;
+
+    struct ibv_send_wr *bad_wr;
+    struct ibv_send_wr *send_wr = ib_res.send_wrs;
 
     CPU_ZERO(&cpu_set);
     CPU_SET((long)args, &cpu_set);
@@ -35,13 +36,6 @@ void *client_function(void *args) {
     struct ibv_wc *wc = (struct ibv_wc *)calloc(num_wc, sizeof(struct ibv_wc));
     assert(wc != NULL && "Could not allocate receive work completion array");
 
-    // for (int i = 0; i < num_concurrent_messages; i++) {
-    //     ret = post_recv(msg_size, ib_res.mr->lkey, (uint64_t)buf_ptr, ib_res.qp, buf_ptr);
-    //     assert(ret == 0 && "Thread failed to post recv");
-    //     buf_offset = (buf_offset + msg_size) % ib_res.ib_buf_size;
-    //     buf_ptr = ib_res.ib_buf + buf_offset;
-    // }
-
     struct ibv_qp_attr attr;
     struct ibv_qp_init_attr init_attr;
     ibv_query_qp(ib_res.qp, &attr, IBV_QP_STATE, &init_attr);
@@ -49,41 +43,40 @@ void *client_function(void *args) {
 
     sleep(1);
     // set up the initial connection
-    ret =
-        post_write(msg_size, ib_res.mr->lkey, (uintptr_t)start_addr, ib_res.qp,
-                   start_addr + ib_res.ib_buf_size, // write buffer is at the end of the recvbuffer
-                   (uintptr_t)raddr, ib_res.rkey, true);
-    assert(ret == 0 && "Could not post write");
-    sleep(1);
-    struct ibv_wc wc2;
-    int n = ibv_poll_cq(ib_res.cq, 1, &wc2);
-    if (n == 1 && wc2.status != IBV_WC_SUCCESS) {
-        printf("Client write failed: %s\n", ibv_wc_status_str(wc2.status));
-    }
+    int send_wr_idx = 0;
+    ret = ibv_post_send(ib_res.qp, &ib_res.send_wrs[send_wr_idx], &bad_wr);
+    assert(ret == 0 && "Could not post the send");
+
     puts("Starting client");
 
-    // buf_offset = 0;
     printf("Polling on %p, to %p, sz: %lu\n", start_addr, end_addr,
            (uintptr_t)end_addr - (uintptr_t)start_addr);
     while (true) {
         // manually poll the address to check that the write has been completed
-        while ((*(volatile char *)start_addr != 'A') || (*(volatile char *)end_addr != 'A')){
+        while ((*(volatile char *)start_addr != 'A') || (*(volatile char *)end_addr != 'A')) {
         }
 
+        puts("Got something!");
+
         // clear the recv buffer
-        memset(start_addr, 0, msg_size);
+        memset(start_addr, 0, msg_size * config_info.batch_size);
 
         // send a message back the other party
         ++message_recv_count;
 
-        buf_offset = (buf_offset + msg_size) % ib_res.ib_buf_size;
-            raddr = (char *)ib_res.raddr_base + buf_offset;
-            start_addr = start_addr_base + buf_offset;
-            end_addr = start_addr + msg_size - 1;
+        buf_offset = (buf_offset + msg_size * config_info.batch_size) % ib_res.ib_buf_size;
 
-        post_write(msg_size, ib_res.mr->lkey, (uintptr_t)start_addr, ib_res.qp,
-                   ib_res.ib_buf + ib_res.ib_buf_size, // write buffer is at the end of the recv buffer
-                   (uintptr_t)raddr, ib_res.rkey, message_recv_count % 20 == 0);
+        start_addr = start_addr_base + buf_offset;
+        end_addr = start_addr + msg_size * config_info.batch_size - 1;
+        send_wr_idx = (send_wr_idx + config_info.batch_size) % config_info.num_concurr_msgs;
+
+        printf(
+            "New start: %p, New end: %p, New Send WR idx: %d, New write dest: %p, Buf Offset: %d\n",
+            start_addr, end_addr, send_wr_idx, ib_res.send_wrs[send_wr_idx].wr.rdma.remote_addr,
+            buf_offset);
+
+        int ret = ibv_post_send(ib_res.qp, &ib_res.send_wrs[send_wr_idx], &bad_wr);
+        assert(ret == 0 && "Could not post send");
 
         // still have to poll here to clear the completed entries for
         // the write requests

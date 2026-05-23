@@ -27,6 +27,10 @@ typedef struct {
     // store the remote host key
     uint32_t rkey;
     uint64_t raddr_base;
+
+    // stuff for message batching
+    struct ibv_send_wr *send_wrs;
+    struct ibv_sge *send_sges;
 } ib_context;
 
 extern ib_context ib_res;

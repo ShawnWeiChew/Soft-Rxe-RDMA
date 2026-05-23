@@ -45,18 +45,18 @@ int setup_ib(bool is_server) {
     // for the send buffer
     ib_res.ib_buf_size = MESSAGE_SIZE * MAX_NUM_MESSAGES;
 
-    ret = posix_memalign((void **)&ib_res.ib_buf, 4096, ib_res.ib_buf_size + MESSAGE_SIZE);
+    ret = posix_memalign((void **)&ib_res.ib_buf, 4096, ib_res.ib_buf_size * 2);
     assert(ib_res.ib_buf != NULL && "Failed to allocate ib buf");
 
     ib_res.mr =
-        ibv_reg_mr(ib_res.pd, (void *)ib_res.ib_buf, ib_res.ib_buf_size + MESSAGE_SIZE,
+        ibv_reg_mr(ib_res.pd, (void *)ib_res.ib_buf, ib_res.ib_buf_size * 2,
                    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
     assert(ib_res.mr != NULL && "Could not register MR");
 
     // clear the recv buffer
     memset(ib_res.ib_buf, 0, MESSAGE_SIZE * MAX_NUM_MESSAGES);
     // set the send buffer
-    memset(ib_res.ib_buf + (MESSAGE_SIZE * MAX_NUM_MESSAGES), 'A', MESSAGE_SIZE);
+    memset(ib_res.ib_buf + (MESSAGE_SIZE * MAX_NUM_MESSAGES), 'A', MESSAGE_SIZE * MAX_NUM_MESSAGES);
 
     ret = ibv_query_device(ib_res.ibv_ctx, &ib_res.dev_attr);
     assert(ret == 0 && "Failed to query device");
@@ -75,7 +75,6 @@ int setup_ib(bool is_server) {
                 .max_recv_wr = ib_res.dev_attr.max_qp_wr,
                 .max_send_sge = 1,
                 .max_recv_sge = 1,
-                .max_inline_data = config_info.msg_size,
             },
         .qp_type = IBV_QPT_RC,
     };
@@ -83,12 +82,56 @@ int setup_ib(bool is_server) {
     ib_res.qp = ibv_create_qp(ib_res.pd, &qp_init_attr);
     assert(ib_res.qp != NULL && "Failed to create a QP");
 
+    ib_res.send_wrs =
+        (struct ibv_send_wr *)calloc(config_info.num_concurr_msgs, sizeof(struct ibv_send_wr));
+    assert(ib_res.send_wrs != NULL && "Could not allocate space for the send wrs");
+
+    ib_res.send_sges =
+        (struct ibv_sge *)calloc(config_info.num_concurr_msgs, sizeof(struct ibv_sge));
+    assert(ib_res.send_sges != NULL && "Could not allocate space for send sges");
+
+    // initialize the sges
+    char *send_buf_ptr = ib_res.ib_buf + ib_res.ib_buf_size;
+    for (int i = 0; i < config_info.num_concurr_msgs; i++) {
+        ib_res.send_sges[i].addr = (uintptr_t)send_buf_ptr;
+        ib_res.send_sges[i].length = config_info.msg_size;
+        ib_res.send_sges[i].lkey = ib_res.mr->lkey;
+    }
+
     if (config_info.is_server) {
         ret = connect_qp_server();
     } else {
         ret = connect_qp_client();
     }
     assert(ret == 0 && "Failed to exchange QP information");
+
+    // set up the wrs
+    int num_batches = ib_res.ib_buf_size / (config_info.batch_size * config_info.msg_size);
+    int idx = 0;
+    uint64_t raddr = ib_res.raddr_base;
+    for (int i = 0; i < num_batches; i++) {
+        printf("%d: Batch start addr: %p\n", i + 1, raddr);
+
+        for (int j = 0; j < config_info.batch_size - 1; j++) {
+            ib_res.send_wrs[idx].next = &ib_res.send_wrs[idx + 1];
+            ib_res.send_wrs[idx].sg_list = &ib_res.send_sges[idx];
+            ib_res.send_wrs[idx].num_sge = 1;
+            ib_res.send_wrs[idx].opcode = IBV_WR_RDMA_WRITE;
+            ib_res.send_wrs[idx].wr.rdma.remote_addr = raddr;
+            ib_res.send_wrs[idx].wr.rdma.rkey = ib_res.rkey;
+            idx++;
+            raddr += config_info.msg_size;
+        }
+
+        ib_res.send_wrs[idx].next = NULL;
+        ib_res.send_wrs[idx].sg_list = &ib_res.send_sges[idx];
+        ib_res.send_wrs[idx].num_sge = 1;
+        ib_res.send_wrs[idx].opcode = IBV_WR_RDMA_WRITE;
+        ib_res.send_wrs[idx].wr.rdma.remote_addr = raddr;
+        ib_res.send_wrs[idx].wr.rdma.rkey = ib_res.rkey;
+        idx++;
+        raddr += config_info.msg_size;
+    }
 
     ibv_free_device_list(dev_list);
     return 0;
@@ -117,6 +160,14 @@ void close_ib() {
 
     if (ib_res.ib_buf) {
         free(ib_res.ib_buf);
+    }
+
+    if (ib_res.send_wrs) {
+        free(ib_res.send_wrs);
+    }
+
+    if (ib_res.send_sges) {
+        free(ib_res.send_sges);
     }
 
     return;

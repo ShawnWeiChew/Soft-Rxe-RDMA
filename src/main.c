@@ -22,6 +22,7 @@ int main(int argc, char **argv) {
 
     config_info.num_concurr_msgs = 20;
     config_info.msg_size = 64;
+    config_info.batch_size = 4;
 
     ret = setup_ib(config_info.is_server);
     assert(ret == 0 && "Could not set up IB connection");

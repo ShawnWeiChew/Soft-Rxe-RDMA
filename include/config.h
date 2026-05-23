@@ -14,6 +14,8 @@ struct ConfigInfo {
 
     char *sock_port;   /* socket port number */
     char *server_name; /* server name */
+
+    int batch_size;
 } __attribute__((aligned(64)));
 
 extern struct ConfigInfo config_info;
